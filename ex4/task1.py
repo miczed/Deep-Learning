@@ -18,36 +18,38 @@ import numpy
 # B: size of the batch
 def batch(X, T, B, epochs):
     # figure out how many batches there will be
-    n = len(X)
+    n = X.shape[0]
     rest = n % B
     batch_count = math.floor(n/B)
     if rest > 0:
         batch_count += 1
 
-    # combine X and T
-    XT = numpy.stack((X, T), axis=1)  # dim [N x D+O]
+    # gets a list of all indices in X
+    indices = list(range(X.shape[0]))
 
-    # shuffle XT (only shuffles along 1st axis (which is what we want)
-    numpy.random.shuffle(XT)
+    # shuffle indices in place
+    numpy.random.shuffle(indices)
     for e in range(epochs):
-        for b in range(batch_count):
-            # yield statement pauses the function saving all its states
-            # and later continues from there on successive calls.
-            start = b*B
-            end = (b+1)*B
-            if end >= n:
-                rest = end-n
-                partial_batch = XT[start:n, :]
-                # shuffle samples again
-                numpy.random.shuffle(XT)
-                # print(F"Batching samples [{start},{n}) with rest: [{0},{rest})")
-                whole_batch = numpy.concatenate((partial_batch, XT[0:rest, :]))
-                # return X values in 0 column, T values in 1 column
-            else:
-                # print(F"Batching samples [{start},{end})")
-                # return rows start..end and all columns ( : stands for all columns)
-                whole_batch = XT[start:end, :]
-            yield whole_batch[:, 0], whole_batch[:, 1], e+1
+        if B == n:
+            yield X, T, e+1
+        else:
+            for b in range(batch_count):
+                # yield statement pauses the function saving all its states
+                # and later continues from there on successive calls.
+                start = b*B
+                end = (b+1)*B
+                if end >= n:
+                    rest = end-n
+                    partial_batch = indices[start:n]
+                    # shuffle samples again
+                    numpy.random.shuffle(indices)
+                    # print(F"Batching samples [{start},{n}) with rest: [{0},{rest})")
+                    whole_batch = numpy.concatenate((partial_batch, indices[0:rest]))
+                else:
+                    # print(F"Batching samples [{start},{end})")
+                    # return rows start..end and all columns ( : stands for all columns)
+                    whole_batch = indices[start:end]
+                yield numpy.array([X[i] for i in whole_batch]), numpy.array([T[j] for j in whole_batch]), e+1
 
 
 x = numpy.array(range(100))
@@ -116,15 +118,21 @@ def compute_gradient(X, Y, T, W2, H):
 # ------------------------
 # Task 3: Gradient Descent Step
 # ------------------------
-def descent(X, T, W1, W2, eta):
+def descent(X, T, W1, W2, eta, mu=None):
     Y, H = forward(X, W1, W2)
     loss = compute_loss(Y, T)
 
     g1, g2 = compute_gradient(X, Y, T, W2, H)
-
-    # weight updates
-    W1 = W1 - eta * g1
-    W2 = W2 - eta * g2
+    old_W1, old_W2 = None, None
+    if mu is not None and old_W1 and old_W2:
+        # momentum learning
+        W1 = W1 - eta * g1 + mu * (W1-old_W1)
+        W2 = W2 - eta * g2 + mu * (W2-old_W2)
+        old_W1 = W1
+        old_W2 = W2
+    else:
+        W1 = W1 - eta * g1
+        W2 = W2 - eta * g2
 
     return Y, W1, W2, loss
 
@@ -178,36 +186,31 @@ def prep_output_data(row):
 input_data = numpy.array(list(map(prep_input_data, data)))
 training_data = numpy.array(list(map(prep_output_data, data)))
 
+def add_bias(X):
+    # add bias to X x0 dim(n x 1)
+    x0 = numpy.ones((X.shape[0], 1))  # creates n X 1 matrix with ones
+    # adds 1 as first column to matrix
+    return numpy.hstack((x0, X))  # X has now dim(N x d+1)
 
-def training(X, T, hidden_neurons, eta=0.01, num_epochs=1000, batch_size=None):
 
-    num_samples = X.shape[0] if batch_size is None else batch_size
+def gradient_descent(X, T, hidden_neurons, eta=0.01, num_epochs=1000):
+    num_samples = X.shape[0]
     input_dim = X.shape[1]
     output_dim = T.shape[1]
-    epoch = 0
     losses = numpy.array([])
 
-    assert(input_dim == output_dim, "Input and Training dimensions must match")
-    assert(num_samples == T.shape[0], "Number of Input and Training samples must match")
-
-    # add bias to X x0 dim(n x 1)
-    x0 = numpy.ones((num_samples, 1))  # creates n X 1 matrix with ones
-    # adds 1 as first column to matrix
-    X = numpy.hstack((x0, X))  # X has now dim(N x d+1)
-
-    # transpose X and T so they match DIM of formulas used in lecture
-    X = X.T
-    T = T.T
+    assert num_samples == T.shape[0], "Number of Input and Training samples must match"
 
     # initialize weights
     # W1 dim(k+1, D+1)
-    W1 = numpy.random.rand(hidden_neurons + 1, input_dim+1) * 2. - 1.  # between [-1.0, 1.0)
+    W1 = numpy.random.rand(hidden_neurons + 1, input_dim) * 2. - 1.  # between [-1.0, 1.0)
 
     # W2 dim(O x K+1)
     W2 = numpy.random.rand(output_dim, hidden_neurons+1)
-
+    epoch = 0
     while epoch < num_epochs:
-        Y, W1, W2, loss = descent(X, T, W1, W2, eta)
+        # transpose X and T so they match DIM of formulas used in lecture
+        Y, W1, W2, loss = descent(X.T, T.T, W1, W2, eta)
         losses = numpy.append(losses, loss)
         print(f"Epoch: {epoch}, Loss: {loss}")
         epoch += 1
@@ -215,9 +218,42 @@ def training(X, T, hidden_neurons, eta=0.01, num_epochs=1000, batch_size=None):
     return losses
 
 
-gd_losses = training(input_data, training_data, 500, 0.005, 10000)
+def stochastic_gradient_descent(X, T, hidden_neurons, eta=0.01, num_epochs=1000, batch_size=24, mu=None):
 
+    num_samples = X.shape[0]
+    input_dim = X.shape[1]
+    output_dim = T.shape[1]
+    losses = numpy.array([])
+
+    assert num_samples == T.shape[0], "Number of Input and Training samples must match"
+
+    # initialize weights
+    # W1 dim(k+1, D+1)
+    W1 = numpy.random.rand(hidden_neurons + 1, input_dim) * 2. - 1.  # between [-1.0, 1.0)
+
+    # W2 dim(O x K+1)
+    W2 = numpy.random.rand(output_dim, hidden_neurons+1)
+    old_epoch = 1
+    for x, t, epoch in batch(X, T, batch_size, num_epochs):
+        # transpose X and T so they match DIM of formulas used in lecture
+        Y, W1, W2, loss = descent(x.T, t.T, W1, W2, eta, mu)
+        if epoch != old_epoch:
+            old_epoch = epoch
+            losses = numpy.append(losses, loss)
+            print(f"Epoch: {epoch}, Loss: {loss}")
+
+    return losses
+
+
+input_data = add_bias(input_data)
+gd_losses = gradient_descent(input_data, training_data, 500, 0.005, 100000)
+sgd_losses = stochastic_gradient_descent(input_data, training_data, 500, 0.005, 100000, batch_size=64)
+mom_losses = stochastic_gradient_descent(input_data, training_data, 500, 0.005, 100000, batch_size=64, mu=0.99)
+
+pyplot.loglog(sgd_losses, label="Stochastic Gradient Descent Loss")
+pyplot.loglog(mom_losses, label="Stochastic Gradient Descent Loss + Momentum")
 pyplot.loglog(gd_losses, label="Gradient Descent Loss")
+
 pyplot.xlabel("epochs")
 pyplot.ylabel("loss")
 
